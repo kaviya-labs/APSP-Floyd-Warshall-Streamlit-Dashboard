@@ -43,7 +43,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🔗 All-Pairs Shortest Paths — Interactive Dashboard")
+st.title("🔗 All-Pairs Shortest Paths : Interactive Dashboard")
 st.caption(
     "Floyd–Warshall study dashboard based on the submitted dissertation and practical notebook. "
     "It exposes the matrix evolution, relaxation events, path reconstruction, validation, benchmarking, "
