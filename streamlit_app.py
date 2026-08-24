@@ -565,7 +565,7 @@ with tabs[0]:
 
     with left:
         st.subheader("Selected graph")
-        draw_graph(graph, f"{selected_graph_name} — directed weighted graph")
+        draw_graph(graph, f"{selected_graph_name} - directed weighted graph")
 
     with right:
         st.subheader("Final APSP distance matrix")
@@ -602,7 +602,7 @@ with tabs[0]:
 # -----------------------------
 with tabs[1]:
     st.subheader("Interactive matrix snapshot viewer")
-    stage_labels = ["Initial — no intermediate vertex"]
+    stage_labels = ["Initial - no intermediate vertex"]
     stage_labels += [f"After {n} is allowed as intermediate" for n in nodes]
 
     selected_label = st.selectbox("Select matrix stage", stage_labels)
@@ -849,7 +849,7 @@ with tabs[5]:
             },
             {
                 "Algorithm": "Repeated Dijkstra",
-                "APSP directly": "No — repeated SSSP",
+                "APSP directly": "No - repeated SSSP",
                 "Negative edges": "No",
                 "Complete matrix evolution": "Low",
                 "Interpretability in study": "Moderate",
@@ -859,7 +859,7 @@ with tabs[5]:
             },
             {
                 "Algorithm": "Repeated Bellman–Ford",
-                "APSP directly": "No — repeated SSSP",
+                "APSP directly": "No - repeated SSSP",
                 "Negative edges": "Yes",
                 "Complete matrix evolution": "Low",
                 "Interpretability in study": "Moderate",
