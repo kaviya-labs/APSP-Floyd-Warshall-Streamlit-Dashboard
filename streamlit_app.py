@@ -1,0 +1,898 @@
+
+import math
+import time
+from dataclasses import dataclass
+from typing import Dict, Hashable, List, Optional, Sequence, Tuple
+
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+
+st.set_page_config(
+    page_title="APSP • Floyd–Warshall Visual Analytics",
+    page_icon="🔗",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# -----------------------------
+# Theme / lightweight styling
+# -----------------------------
+st.markdown(
+    """
+    <style>
+    .block-container {padding-top: 1.4rem; padding-bottom: 2rem;}
+    .metric-card {
+        padding: 0.85rem 1rem;
+        border: 1px solid rgba(128,128,128,.22);
+        border-radius: 12px;
+        background: rgba(128,128,128,.05);
+    }
+    .small-note {font-size: .86rem; opacity: .78;}
+    .prediction {
+        padding: 1rem 1.1rem;
+        border-radius: 12px;
+        border: 1px solid rgba(50,120,200,.35);
+        background: rgba(50,120,200,.07);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.title("🔗 All-Pairs Shortest Paths — Interactive Dashboard")
+st.caption(
+    "Floyd–Warshall study dashboard based on the submitted dissertation and practical notebook. "
+    "It exposes the matrix evolution, relaxation events, path reconstruction, validation, benchmarking, "
+    "and a rule-based algorithm prediction panel."
+)
+
+
+# -----------------------------
+# Graph construction
+# -----------------------------
+def build_directed_graph(
+    nodes: Sequence[Hashable],
+    edges: Sequence[Tuple[Hashable, Hashable, float]],
+) -> nx.DiGraph:
+    graph = nx.DiGraph()
+    graph.add_nodes_from(nodes)
+    for source, target, weight in edges:
+        graph.add_edge(source, target, weight=float(weight))
+    return graph
+
+
+TEACHING_NODES = ["A", "B", "C", "D"]
+TEACHING_EDGES = [
+    ("A", "B", 5), ("A", "D", 10), ("B", "C", 3),
+    ("B", "D", 9), ("C", "D", 1), ("D", "A", 2), ("D", "C", 4),
+]
+TEACHING_GRAPH = build_directed_graph(TEACHING_NODES, TEACHING_EDGES)
+
+NEGATIVE_NODES = ["A", "B", "C", "D", "E"]
+NEGATIVE_EDGES = [
+    ("A", "B", 3), ("A", "C", 8), ("A", "E", -4),
+    ("B", "D", 1), ("B", "E", 7), ("C", "B", 4),
+    ("D", "A", 2), ("D", "C", -5), ("E", "D", 6),
+]
+NEGATIVE_GRAPH = build_directed_graph(NEGATIVE_NODES, NEGATIVE_EDGES)
+
+
+def make_sparse_graph(node_count: int = 12) -> nx.DiGraph:
+    nodes = list(range(node_count))
+    edges = []
+    for i in nodes:
+        edges.append((i, (i + 1) % node_count, float((3 * i + 2) % 9 + 1)))
+    for i in nodes:
+        j = (i + 4) % node_count
+        edges.append((i, j, float((5 * i + 3) % 11 + 2)))
+    return build_directed_graph(nodes, edges)
+
+
+def make_dense_graph(node_count: int = 9) -> nx.DiGraph:
+    nodes = list(range(node_count))
+    edges = []
+    for i in nodes:
+        for j in nodes:
+            if i != j:
+                edges.append((i, j, float(((7 * i + 3 * j + i * j) % 14) + 1)))
+    return build_directed_graph(nodes, edges)
+
+
+SPARSE_GRAPH = make_sparse_graph()
+DENSE_GRAPH = make_dense_graph()
+
+GRAPH_CASES = {
+    "Teaching graph": (TEACHING_GRAPH, TEACHING_NODES),
+    "Negative-edge graph": (NEGATIVE_GRAPH, NEGATIVE_NODES),
+    "Sparse graph": (SPARSE_GRAPH, list(SPARSE_GRAPH.nodes())),
+    "Dense graph": (DENSE_GRAPH, list(DENSE_GRAPH.nodes())),
+}
+
+
+# -----------------------------
+# Floyd–Warshall explainable engine
+# -----------------------------
+@dataclass
+class FloydWarshallResult:
+    nodes: List[Hashable]
+    distance: np.ndarray
+    predecessor: np.ndarray
+    snapshots: List[np.ndarray]
+    updates_by_stage: List[List[dict]]
+    negative_cycle_nodes: List[Hashable]
+
+
+def initialise_distance_and_predecessor(
+    graph: nx.DiGraph,
+    nodes: Sequence[Hashable],
+):
+    node_index = {node: index for index, node in enumerate(nodes)}
+    size = len(nodes)
+    distance = np.full((size, size), np.inf, dtype=float)
+    predecessor = np.full((size, size), None, dtype=object)
+    np.fill_diagonal(distance, 0.0)
+
+    for source, target, data in graph.edges(data=True):
+        i, j = node_index[source], node_index[target]
+        weight = float(data["weight"])
+        if weight < distance[i, j]:
+            distance[i, j] = weight
+            predecessor[i, j] = source
+
+    return distance, predecessor, node_index
+
+
+def floyd_warshall_explainable(
+    graph: nx.DiGraph,
+    nodes: Sequence[Hashable],
+) -> FloydWarshallResult:
+    distance, predecessor, node_index = initialise_distance_and_predecessor(graph, nodes)
+    snapshots = [distance.copy()]
+    updates_by_stage = []
+
+    for k, intermediate in enumerate(nodes):
+        stage_updates = []
+        for i, source in enumerate(nodes):
+            for j, target in enumerate(nodes):
+                if not np.isfinite(distance[i, k]) or not np.isfinite(distance[k, j]):
+                    continue
+                candidate = distance[i, k] + distance[k, j]
+                if candidate < distance[i, j]:
+                    old_distance = distance[i, j]
+                    distance[i, j] = candidate
+                    predecessor[i, j] = predecessor[k, j]
+                    stage_updates.append(
+                        {
+                            "Stage": k + 1,
+                            "Intermediate": intermediate,
+                            "Source": source,
+                            "Target": target,
+                            "Old distance": old_distance,
+                            "New distance": candidate,
+                            "Improvement": (
+                                old_distance - candidate
+                                if np.isfinite(old_distance)
+                                else np.inf
+                            ),
+                        }
+                    )
+        updates_by_stage.append(stage_updates)
+        snapshots.append(distance.copy())
+
+    negative_cycle_nodes = [
+        nodes[i] for i in range(len(nodes)) if distance[i, i] < 0
+    ]
+
+    return FloydWarshallResult(
+        nodes=list(nodes),
+        distance=distance,
+        predecessor=predecessor,
+        snapshots=snapshots,
+        updates_by_stage=updates_by_stage,
+        negative_cycle_nodes=negative_cycle_nodes,
+    )
+
+
+def reconstruct_path(
+    result: FloydWarshallResult,
+    source: Hashable,
+    target: Hashable,
+) -> Optional[List[Hashable]]:
+    if result.negative_cycle_nodes:
+        raise ValueError(
+            "Shortest paths are undefined because a negative cycle is present."
+        )
+
+    index = {node: i for i, node in enumerate(result.nodes)}
+    i, j = index[source], index[target]
+
+    if source == target:
+        return [source]
+    if result.predecessor[i, j] is None:
+        return None
+
+    path = [target]
+    current = target
+
+    for _ in range(len(result.nodes) + 1):
+        if current == source:
+            return list(reversed(path))
+        current = result.predecessor[i, index[current]]
+        if current is None:
+            return None
+        path.append(current)
+
+    raise RuntimeError("Path reconstruction exceeded the safe predecessor limit.")
+
+
+def path_weight(graph: nx.DiGraph, path: Sequence[Hashable]) -> float:
+    if len(path) <= 1:
+        return 0.0
+    return float(sum(graph[u][v]["weight"] for u, v in zip(path[:-1], path[1:])))
+
+
+# -----------------------------
+# Validation helpers
+# -----------------------------
+def matrix_from_distance_dictionary(distances: Dict, nodes: Sequence[Hashable]):
+    matrix = np.full((len(nodes), len(nodes)), np.inf, dtype=float)
+    for i, source in enumerate(nodes):
+        matrix[i, i] = 0.0
+        for target, value in distances.get(source, {}).items():
+            matrix[i, nodes.index(target)] = float(value)
+    return matrix
+
+
+def networkx_floyd_matrix(graph, nodes):
+    return matrix_from_distance_dictionary(
+        dict(nx.floyd_warshall(graph, weight="weight")), list(nodes)
+    )
+
+
+def repeated_dijkstra_matrix(graph, nodes):
+    if any(data["weight"] < 0 for _, _, data in graph.edges(data=True)):
+        raise ValueError("Dijkstra is not applicable to negative edge weights.")
+    distances = {
+        source: nx.single_source_dijkstra_path_length(graph, source, weight="weight")
+        for source in nodes
+    }
+    return matrix_from_distance_dictionary(distances, nodes)
+
+
+def repeated_bellman_ford_matrix(graph, nodes):
+    if nx.negative_edge_cycle(graph, weight="weight"):
+        raise nx.NetworkXUnbounded("Negative cycle.")
+    distances = {
+        source: nx.single_source_bellman_ford_path_length(graph, source, weight="weight")
+        for source in nodes
+    }
+    return matrix_from_distance_dictionary(distances, nodes)
+
+
+def johnson_distance_matrix(graph, nodes):
+    paths = nx.johnson(graph, weight="weight")
+    matrix = np.full((len(nodes), len(nodes)), np.inf, dtype=float)
+    for i, source in enumerate(nodes):
+        matrix[i, i] = 0.0
+        for j, target in enumerate(nodes):
+            if target in paths[source]:
+                matrix[i, j] = nx.path_weight(graph, paths[source][target], weight="weight")
+    return matrix
+
+
+def matrices_match(left, right):
+    if not np.array_equal(np.isfinite(left), np.isfinite(right)):
+        return False
+    mask = np.isfinite(left)
+    return bool(np.allclose(left[mask], right[mask]))
+
+
+@st.cache_data(show_spinner=False)
+def run_validation(graph_name: str):
+    graph, nodes = GRAPH_CASES[graph_name]
+    result = floyd_warshall_explainable(graph, nodes)
+    rows = []
+
+    checks = [
+        ("NetworkX Floyd–Warshall", lambda: networkx_floyd_matrix(graph, nodes)),
+        ("Repeated Dijkstra", lambda: repeated_dijkstra_matrix(graph, nodes)),
+        ("Repeated Bellman–Ford", lambda: repeated_bellman_ford_matrix(graph, nodes)),
+        ("Johnson", lambda: johnson_distance_matrix(graph, nodes)),
+    ]
+
+    for method, fn in checks:
+        try:
+            comparison = matrices_match(result.distance, fn())
+            rows.append(
+                {
+                    "Method": method,
+                    "Applicable": True,
+                    "Matches custom matrix": comparison,
+                    "Status": "Agreement" if comparison else "Mismatch",
+                }
+            )
+        except (ValueError, nx.NetworkXUnbounded):
+            rows.append(
+                {
+                    "Method": method,
+                    "Applicable": False,
+                    "Matches custom matrix": None,
+                    "Status": "Not applicable",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(show_spinner=False)
+def run_path_evaluation(graph_name: str):
+    graph, nodes = GRAPH_CASES[graph_name]
+    result = floyd_warshall_explainable(graph, nodes)
+    finite_pairs = recovered_pairs = correct_weights = 0
+
+    if result.negative_cycle_nodes:
+        return pd.DataFrame(
+            [{
+                "Graph": graph_name,
+                "Finite pairs": 0,
+                "Recovered pairs": 0,
+                "Correct path weights": 0,
+                "Path recovery completeness (%)": np.nan,
+                "Path weight correctness (%)": np.nan,
+            }]
+        )
+
+    for i, source in enumerate(nodes):
+        for j, target in enumerate(nodes):
+            if np.isfinite(result.distance[i, j]):
+                finite_pairs += 1
+                path = reconstruct_path(result, source, target)
+                if path and path[0] == source and path[-1] == target:
+                    recovered_pairs += 1
+                    if math.isclose(
+                        path_weight(graph, path),
+                        result.distance[i, j],
+                        rel_tol=1e-9,
+                        abs_tol=1e-9,
+                    ):
+                        correct_weights += 1
+
+    return pd.DataFrame(
+        [{
+            "Graph": graph_name,
+            "Finite pairs": finite_pairs,
+            "Recovered pairs": recovered_pairs,
+            "Correct path weights": correct_weights,
+            "Path recovery completeness (%)": (
+                100 * recovered_pairs / finite_pairs if finite_pairs else np.nan
+            ),
+            "Path weight correctness (%)": (
+                100 * correct_weights / finite_pairs if finite_pairs else np.nan
+            ),
+        }]
+    )
+
+
+# -----------------------------
+# Benchmark implementation
+# -----------------------------
+def make_benchmark_graph(node_count: int, density_label: str):
+    nodes = list(range(node_count))
+    edges = []
+
+    for i in nodes:
+        edges.append(
+            (i, (i + 1) % node_count, float(((11 * i + 5) % 17) + 1))
+        )
+
+    if density_label == "Sparse":
+        for i in nodes:
+            for offset in (3, 7):
+                if offset < node_count:
+                    j = (i + offset) % node_count
+                    edges.append(
+                        (i, j, float(((13 * i + 7 * j + offset) % 23) + 1))
+                    )
+    else:
+        for i in nodes:
+            for j in nodes:
+                if i != j:
+                    edges.append(
+                        (i, j, float(((17 * i + 19 * j + i * j) % 29) + 1))
+                    )
+
+    return build_directed_graph(nodes, edges)
+
+
+def time_callable(function, repeats=3):
+    measurements = []
+    for _ in range(repeats):
+        start = time.perf_counter()
+        function()
+        measurements.append(time.perf_counter() - start)
+    return float(np.median(measurements))
+
+
+@st.cache_data(show_spinner=False)
+def benchmark_algorithms(sizes=(10, 20, 30, 40), repeats=3):
+    rows = []
+    for density in ("Sparse", "Dense"):
+        for n in sizes:
+            graph = make_benchmark_graph(n, density)
+            nodes = list(graph.nodes())
+            algorithms = {
+                "Custom Floyd–Warshall": lambda: floyd_warshall_explainable(graph, nodes),
+                "Repeated Dijkstra": lambda: [
+                    nx.single_source_dijkstra_path_length(graph, source, weight="weight")
+                    for source in nodes
+                ],
+                "Repeated Bellman–Ford": lambda: [
+                    nx.single_source_bellman_ford_path_length(graph, source, weight="weight")
+                    for source in nodes
+                ],
+                "Johnson": lambda: nx.johnson(graph, weight="weight"),
+            }
+
+            for name, fn in algorithms.items():
+                rows.append(
+                    {
+                        "Density": density,
+                        "Nodes": n,
+                        "Edges": graph.number_of_edges(),
+                        "Algorithm": name,
+                        "Median seconds": time_callable(fn, repeats),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+# -----------------------------
+# Display helpers
+# -----------------------------
+def format_matrix(matrix, nodes):
+    df = pd.DataFrame(matrix, index=nodes, columns=nodes)
+    return df.map(lambda x: "∞" if not np.isfinite(x) else round(float(x), 3))
+
+
+def graph_summary_df():
+    rows = []
+    for name, (graph, nodes) in GRAPH_CASES.items():
+        possible = len(nodes) * (len(nodes) - 1)
+        rows.append(
+            {
+                "Graph": name,
+                "Vertices": graph.number_of_nodes(),
+                "Edges": graph.number_of_edges(),
+                "Density": graph.number_of_edges() / possible if possible else 0,
+                "Negative edge": any(
+                    data["weight"] < 0 for _, _, data in graph.edges(data=True)
+                ),
+                "Negative cycle": nx.negative_edge_cycle(graph, weight="weight"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def draw_graph(graph, title, path_edges=None):
+    positions = nx.circular_layout(graph)
+    emphasized = set(path_edges or [])
+    widths = [3.8 if (u, v) in emphasized else 1.0 for u, v in graph.edges()]
+
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    nx.draw_networkx(
+        graph,
+        pos=positions,
+        with_labels=True,
+        arrows=True,
+        width=widths,
+        node_size=1300,
+        ax=ax,
+    )
+    nx.draw_networkx_edge_labels(
+        graph,
+        positions,
+        edge_labels=nx.get_edge_attributes(graph, "weight"),
+        ax=ax,
+        font_size=9,
+    )
+    ax.set_title(title)
+    ax.axis("off")
+    st.pyplot(fig, clear_figure=True)
+
+
+# -----------------------------
+# Sidebar controls
+# -----------------------------
+with st.sidebar:
+    st.header("Dashboard controls")
+    selected_graph_name = st.selectbox("Graph scenario", list(GRAPH_CASES.keys()))
+    graph, nodes = GRAPH_CASES[selected_graph_name]
+
+    show_benchmarks = st.checkbox(
+        "Enable runtime benchmark",
+        value=False,
+        help="Runs deterministic 10/20/30/40 vertex benchmark cases using the same methodology as the practical.",
+    )
+
+    st.divider()
+    st.markdown("**Study focus**")
+    st.write("• APSP + Floyd–Warshall")
+    st.write("• Matrix evolution")
+    st.write("• Relaxation logging")
+    st.write("• Path reconstruction")
+    st.write("• Validation")
+    st.write("• Runtime comparison")
+    st.write("• Algorithm prediction")
+
+result = floyd_warshall_explainable(graph, nodes)
+summary = graph_summary_df()
+selected_summary = summary[summary["Graph"] == selected_graph_name].iloc[0]
+
+# -----------------------------
+# KPI row
+# -----------------------------
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Vertices", int(selected_summary["Vertices"]))
+c2.metric("Edges", int(selected_summary["Edges"]))
+c3.metric("Density", f"{selected_summary['Density']:.3f}")
+c4.metric("Relaxation updates", sum(len(x) for x in result.updates_by_stage))
+c5.metric(
+    "Negative cycle",
+    "Detected" if result.negative_cycle_nodes else "None",
+)
+
+st.divider()
+
+tabs = st.tabs(
+    [
+        "📊 Dashboard",
+        "🧮 Matrix Evolution",
+        "🛣️ Prediction Panel",
+        "✅ Validation",
+        "⏱️ Benchmarks",
+        "📋 Algorithm Comparison",
+    ]
+)
+
+# -----------------------------
+# Dashboard
+# -----------------------------
+with tabs[0]:
+    left, right = st.columns([1.25, 1])
+
+    with left:
+        st.subheader("Selected graph")
+        draw_graph(graph, f"{selected_graph_name} — directed weighted graph")
+
+    with right:
+        st.subheader("Final APSP distance matrix")
+        st.dataframe(format_matrix(result.distance, nodes), use_container_width=True)
+
+        if result.negative_cycle_nodes:
+            st.error(
+                "Shortest-path output is not accepted because a negative cycle was detected."
+            )
+        elif any(data["weight"] < 0 for _, _, data in graph.edges(data=True)):
+            st.info(
+                "Negative edges are present, but the selected graph has no negative cycle. "
+                "Floyd–Warshall remains applicable; Dijkstra is excluded."
+            )
+        else:
+            st.success("No negative edge is present in this scenario.")
+
+    st.subheader("Relaxation behaviour")
+    counts = pd.DataFrame(
+        {
+            "Intermediate vertex": nodes,
+            "Improved cells": [len(x) for x in result.updates_by_stage],
+        }
+    ).set_index("Intermediate vertex")
+    st.bar_chart(counts)
+
+    st.caption(
+        "The study explicitly treats update counts as an interpretive measure of useful matrix changes, "
+        "not as a replacement for the O(V³) complexity of Floyd–Warshall."
+    )
+
+# -----------------------------
+# Matrix evolution
+# -----------------------------
+with tabs[1]:
+    st.subheader("Interactive matrix snapshot viewer")
+    stage_labels = ["Initial — no intermediate vertex"]
+    stage_labels += [f"After {n} is allowed as intermediate" for n in nodes]
+
+    selected_label = st.selectbox("Select matrix stage", stage_labels)
+    stage_index = stage_labels.index(selected_label)
+
+    st.dataframe(
+        format_matrix(result.snapshots[stage_index], nodes),
+        use_container_width=True,
+    )
+
+    finite = result.snapshots[stage_index][np.isfinite(result.snapshots[stage_index])]
+    if finite.size:
+        display_cap = float(finite.max() + max(1, finite.std()))
+    else:
+        display_cap = 1.0
+
+    visible = np.where(np.isfinite(result.snapshots[stage_index]), result.snapshots[stage_index], display_cap)
+    fig, ax = plt.subplots(figsize=(7, 5.5))
+    image = ax.imshow(visible, aspect="auto")
+    fig.colorbar(image, ax=ax, label="Distance (∞ display-capped)")
+    ax.set_xticks(range(len(nodes)), nodes)
+    ax.set_yticks(range(len(nodes)), nodes)
+    ax.set_xlabel("Target")
+    ax.set_ylabel("Source")
+    ax.set_title(selected_label)
+    for i in range(len(nodes)):
+        for j in range(len(nodes)):
+            label = "∞" if not np.isfinite(result.snapshots[stage_index][i, j]) else f"{result.snapshots[stage_index][i, j]:g}"
+            ax.text(j, i, label, ha="center", va="center")
+    st.pyplot(fig, clear_figure=True)
+
+    updates = result.updates_by_stage[stage_index - 1] if stage_index > 0 else []
+    st.subheader("Updates introduced at this stage")
+    if updates:
+        update_df = pd.DataFrame(updates)
+        st.dataframe(
+            update_df.style.format(
+                {
+                    "Old distance": lambda x: "∞" if not np.isfinite(x) else f"{x:g}",
+                    "New distance": "{:.3g}",
+                    "Improvement": lambda x: "newly reachable" if not np.isfinite(x) else f"{x:.3g}",
+                }
+            ),
+            use_container_width=True,
+        )
+    else:
+        st.info("No matrix cells improved at this stage.")
+
+# -----------------------------
+# Prediction panel
+# -----------------------------
+with tabs[2]:
+    st.subheader("🔮 Prediction & decision panel")
+
+    if result.negative_cycle_nodes:
+        st.error(
+            f"Prediction disabled for shortest-path output: negative cycle detected at "
+            f"{result.negative_cycle_nodes}."
+        )
+    else:
+        p1, p2, p3 = st.columns(3)
+        source = p1.selectbox("Source", nodes, key=f"source_{selected_graph_name}")
+        target = p2.selectbox("Target", nodes, key=f"target_{selected_graph_name}")
+        objective = p3.selectbox(
+            "Decision objective",
+            ["Best interpretability", "Best measured speed", "Best APSP fit"],
+        )
+
+        path = reconstruct_path(result, source, target)
+        if path is None:
+            st.warning(f"No finite route exists from {source} to {target}.")
+        else:
+            distance = result.distance[nodes.index(source), nodes.index(target)]
+            weight = path_weight(graph, path)
+
+            st.markdown(
+                f"""
+                <div class="prediction">
+                <b>Predicted shortest route</b><br>
+                {' → '.join(map(str, path))}<br>
+                <b>Predicted distance:</b> {distance:g}
+                &nbsp; | &nbsp;
+                <b>Verified path weight:</b> {weight:g}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.success("Path weight agrees with the selected APSP matrix value.")
+
+            draw_graph(
+                graph,
+                f"Predicted route: {' → '.join(map(str, path))}",
+                list(zip(path[:-1], path[1:])),
+            )
+
+        # Rule-based algorithm selection prediction.
+        has_negative = any(data["weight"] < 0 for _, _, data in graph.edges(data=True))
+        density = float(selected_summary["Density"])
+        n = int(selected_summary["Vertices"])
+
+        if has_negative:
+            predicted = "Floyd–Warshall" if objective != "Best measured speed" else "Bellman–Ford / Johnson"
+            rationale = (
+                "Negative edges are present, so Dijkstra is excluded. "
+                "For this study, Floyd–Warshall provides the clearest complete matrix evolution; "
+                "Bellman–Ford and Johnson remain applicable when there is no negative cycle."
+            )
+        elif objective == "Best interpretability":
+            predicted = "Floyd–Warshall"
+            rationale = "The study's main contribution is transparent, auditable matrix evolution."
+        elif objective == "Best measured speed":
+            predicted = "Repeated Dijkstra"
+            rationale = (
+                "Repeated Dijkstra was the fastest measured method in the controlled positive-weight "
+                "benchmark cases in the practical."
+            )
+        elif density < 0.35 and n >= 10:
+            predicted = "Johnson"
+            rationale = (
+                "The study identifies Johnson as a strong APSP alternative for sparse graphs, "
+                "especially when repeated single-source computation is suitable."
+            )
+        else:
+            predicted = "Floyd–Warshall"
+            rationale = (
+                "The selected graph is a good fit when complete pairwise distances and matrix-based "
+                "interpretability are more important than raw execution speed."
+            )
+
+        st.markdown("### Algorithm recommendation prediction")
+        st.markdown(
+            f"""
+            <div class="prediction">
+            <b>Predicted method: {predicted}</b><br>
+            {rationale}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.caption(
+            "This is a rule-based prediction/decision aid derived from the study's graph assumptions "
+            "and measured findings. "
+        )
+
+# -----------------------------
+# Validation
+# -----------------------------
+with tabs[3]:
+    st.subheader("Validation against applicable reference algorithms")
+    validation = run_validation(selected_graph_name)
+    st.dataframe(validation, use_container_width=True, hide_index=True)
+
+    applicable = validation[validation["Applicable"]]
+    if len(applicable):
+        agreement = 100 * applicable["Matches custom matrix"].mean()
+        st.metric("Agreement among applicable comparisons", f"{agreement:.0f}%")
+
+    evaluation = run_path_evaluation(selected_graph_name)
+    st.subheader("Path-recovery validation")
+    st.dataframe(evaluation, use_container_width=True, hide_index=True)
+
+    if not result.negative_cycle_nodes:
+        cols = st.columns(2)
+        cols[0].metric(
+            "Path recovery completeness",
+            f"{evaluation.iloc[0]['Path recovery completeness (%)']:.0f}%",
+        )
+        cols[1].metric(
+            "Path-weight correctness",
+            f"{evaluation.iloc[0]['Path weight correctness (%)']:.0f}%",
+        )
+
+    st.caption(
+        "The dissertation reports 100% agreement for the 15 applicable algorithm/graph comparisons "
+        "and 100% recovery plus weight correctness across 266 finite source-target pairs in the controlled cases."
+    )
+
+# -----------------------------
+# Benchmarks
+# -----------------------------
+with tabs[4]:
+    st.subheader("Controlled runtime benchmark")
+
+    if not show_benchmarks:
+        st.info(
+            "Benchmark execution is disabled. Enable **Runtime benchmark** in the sidebar to run "
+            "deterministic 10/20/30/40 vertex cases."
+        )
+    else:
+        with st.spinner("Running deterministic benchmark cases..."):
+            benchmark = benchmark_algorithms()
+
+        density_choice = st.selectbox("Benchmark family", ["Sparse", "Dense"])
+        subset = benchmark[benchmark["Density"] == density_choice]
+
+        chart_df = subset.pivot(
+            index="Nodes", columns="Algorithm", values="Median seconds"
+        )
+        st.line_chart(chart_df)
+
+        st.dataframe(
+            subset.round({"Median seconds": 6}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        fastest = (
+            benchmark.sort_values("Median seconds")
+            .groupby(["Density", "Nodes"], as_index=False)
+            .first()
+        )
+        st.subheader("Fastest measured method by case")
+        st.dataframe(
+            fastest[
+                ["Density", "Nodes", "Edges", "Algorithm", "Median seconds"]
+            ].round({"Median seconds": 6}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.caption(
+            "Timing is environment-dependent. The study uses runtime as one criterion rather than "
+            "a universal ranking of algorithms."
+        )
+
+# -----------------------------
+# Algorithm comparison
+# -----------------------------
+with tabs[5]:
+    st.subheader("Comparative algorithm view")
+
+    comparison = pd.DataFrame(
+        [
+            {
+                "Algorithm": "Floyd–Warshall",
+                "APSP directly": "Yes",
+                "Negative edges": "Yes, without negative cycle",
+                "Complete matrix evolution": "High",
+                "Interpretability in study": "Very high",
+                "Best fit in study": "Complete APSP, teaching, auditability",
+                "Typical time": "O(V³)",
+                "Typical space": "O(V²)",
+            },
+            {
+                "Algorithm": "Repeated Dijkstra",
+                "APSP directly": "No — repeated SSSP",
+                "Negative edges": "No",
+                "Complete matrix evolution": "Low",
+                "Interpretability in study": "Moderate",
+                "Best fit in study": "Sparse non-negative graphs",
+                "Typical time": "Implementation-dependent",
+                "Typical space": "Graph + per-source structures",
+            },
+            {
+                "Algorithm": "Repeated Bellman–Ford",
+                "APSP directly": "No — repeated SSSP",
+                "Negative edges": "Yes",
+                "Complete matrix evolution": "Low",
+                "Interpretability in study": "Moderate",
+                "Best fit in study": "Negative-edge single-source computations",
+                "Typical time": "O(V²E) when repeated",
+                "Typical space": "Graph + per-source structures",
+            },
+            {
+                "Algorithm": "Johnson",
+                "APSP directly": "Yes",
+                "Negative edges": "Yes, without negative cycle",
+                "Complete matrix evolution": "Low",
+                "Interpretability in study": "Moderate",
+                "Best fit in study": "Sparse APSP",
+                "Typical time": "Usually O(VE log V)",
+                "Typical space": "Graph + APSP result",
+            },
+        ]
+    )
+
+    st.dataframe(comparison, use_container_width=True, hide_index=True)
+
+    st.info(
+        "Study conclusion: the question is not simply 'which algorithm is best?' but "
+        "'which algorithm is most appropriate for this graph, objective, and evaluation criterion?'"
+    )
+
+# -----------------------------
+# Footer
+# -----------------------------
+st.divider()
+st.caption(
+    "Study-aligned scope: weighted directed graphs, deterministic inputs, Floyd–Warshall as the "
+    "main algorithm, comparison with Dijkstra/Bellman–Ford/Johnson, visual matrix evolution, "
+    "path reconstruction, negative-cycle safeguarding, validation, and controlled runtime analysis."
+)
