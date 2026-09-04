@@ -645,8 +645,8 @@ with tabs[0]:
 
     st.subheader("Final shortest distances for every graph")
     st.caption(
-        "This section shows the final APSP result for all controlled graph scenarios, "
-        "not only the graph selected in the sidebar."
+        "This section shows the final APSP result for all controlled graph scenarios "
+       
     )
     for graph_name, (case_graph, case_nodes) in GRAPH_CASES.items():
         case_result = floyd_warshall_explainable(case_graph, case_nodes)
