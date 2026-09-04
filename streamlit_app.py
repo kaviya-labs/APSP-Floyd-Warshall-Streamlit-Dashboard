@@ -1,4 +1,3 @@
-
 import math
 import time
 from dataclasses import dataclass
@@ -45,7 +44,7 @@ st.markdown(
 
 st.title("🔗 All-Pairs Shortest Paths : Interactive Dashboard")
 st.caption(
-    "Floyd–Warshall study dashboard based on the submitted dissertation and practical notebook. "
+    "Floyd–Warshall study dashboard based on my dissertation and practical notebook. "
     "It exposes the matrix evolution, relaxation events, path reconstruction, validation, benchmarking, "
     "and a rule-based algorithm prediction panel."
 )
@@ -150,21 +149,54 @@ def floyd_warshall_explainable(
     graph: nx.DiGraph,
     nodes: Sequence[Hashable],
 ) -> FloydWarshallResult:
+    """
+    Explainable custom Floyd-Warshall implementation.
+
+    Why k is the outer loop:
+    k represents the set of vertices currently allowed as intermediate vertices.
+    At stage k, every d[i][j] asks one precise question:
+        "Is i -> j shorter if the newly allowed vertex k is used?"
+    Keeping k outside the i/j loops guarantees that the matrix evolves through
+    well-defined dynamic-programming stages and that each snapshot is auditable.
+
+    Why the triple loop:
+    k: choose the newly permitted intermediate vertex.
+    i: choose the source vertex.
+    j: choose the target vertex.
+    The relaxation compares the current d[i][j] with
+    d[i][k] + d[k][j].
+    This checks every ordered source-target pair for every possible intermediate,
+    giving the standard O(V^3) Floyd-Warshall time complexity.
+    """
     distance, predecessor, node_index = initialise_distance_and_predecessor(graph, nodes)
     snapshots = [distance.copy()]
     updates_by_stage = []
 
+    # k must be the outer loop because each stage means:
+    # "allow nodes[0:k+1] as intermediate vertices".
     for k, intermediate in enumerate(nodes):
         stage_updates = []
+
+        # i and j inspect every ordered source-target pair for this k.
         for i, source in enumerate(nodes):
             for j, target in enumerate(nodes):
-                if not np.isfinite(distance[i, k]) or not np.isfinite(distance[k, j]):
+                via_k_left = distance[i, k]
+                via_k_right = distance[k, j]
+
+                # If either half of i -> k -> j is unreachable, this candidate
+                # cannot improve the current source-target distance.
+                if not np.isfinite(via_k_left) or not np.isfinite(via_k_right):
                     continue
-                candidate = distance[i, k] + distance[k, j]
+
+                candidate = via_k_left + via_k_right
+
+                # Dynamic-programming relaxation:
+                # keep the old route unless going through k is strictly shorter.
                 if candidate < distance[i, j]:
                     old_distance = distance[i, j]
                     distance[i, j] = candidate
                     predecessor[i, j] = predecessor[k, j]
+
                     stage_updates.append(
                         {
                             "Stage": k + 1,
@@ -180,6 +212,7 @@ def floyd_warshall_explainable(
                             ),
                         }
                     )
+
         updates_by_stage.append(stage_updates)
         snapshots.append(distance.copy())
 
@@ -195,6 +228,7 @@ def floyd_warshall_explainable(
         updates_by_stage=updates_by_stage,
         negative_cycle_nodes=negative_cycle_nodes,
     )
+
 
 
 def reconstruct_path(
@@ -457,6 +491,32 @@ def format_matrix(matrix, nodes):
     return df.map(lambda x: "∞" if not np.isfinite(x) else round(float(x), 3))
 
 
+def final_distance_table_for_all_graphs():
+    """Return the final APSP matrix for every controlled graph case."""
+    rows = []
+    for graph_name, (case_graph, case_nodes) in GRAPH_CASES.items():
+        case_result = floyd_warshall_explainable(case_graph, case_nodes)
+        if case_result.negative_cycle_nodes:
+            rows.append(
+                {
+                    "Graph": graph_name,
+                    "Status": "Negative cycle detected; shortest distances undefined",
+                    "Final APSP distance matrix": "Rejected",
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "Graph": graph_name,
+                    "Status": "Valid final APSP matrix",
+                    "Final APSP distance matrix": format_matrix(
+                        case_result.distance, case_nodes
+                    ),
+                }
+            )
+    return rows
+
+
 def graph_summary_df():
     rows = []
     for name, (graph, nodes) in GRAPH_CASES.items():
@@ -583,6 +643,25 @@ with tabs[0]:
         else:
             st.success("No negative edge is present in this scenario.")
 
+    st.subheader("Final shortest distances for every graph")
+    st.caption(
+        "This section shows the final APSP result for all controlled graph scenarios, "
+        "not only the graph selected in the sidebar."
+    )
+    for graph_name, (case_graph, case_nodes) in GRAPH_CASES.items():
+        case_result = floyd_warshall_explainable(case_graph, case_nodes)
+        with st.expander(f"{graph_name} — final shortest-distance matrix"):
+            if case_result.negative_cycle_nodes:
+                st.error(
+                    "Negative cycle detected. A finite shortest-distance matrix is not "
+                    "accepted for this graph."
+                )
+            else:
+                st.dataframe(
+                    format_matrix(case_result.distance, case_nodes),
+                    use_container_width=True,
+                )
+
     st.subheader("Relaxation behaviour")
     counts = pd.DataFrame(
         {
@@ -607,6 +686,14 @@ with tabs[1]:
 
     selected_label = st.selectbox("Select matrix stage", stage_labels)
     stage_index = stage_labels.index(selected_label)
+
+    st.info(
+        "**Why k is the outer loop:** k is the newly allowed intermediate vertex. "
+        "For each k, the inner i and j loops test every source-target pair using "
+        "the candidate route i → k → j. The three loops therefore implement the "
+        "dynamic-programming recurrence and give the O(V³) structure of "
+        "Floyd–Warshall. The snapshots below make each k-stage visible."
+    )
 
     st.dataframe(
         format_matrix(result.snapshots[stage_index], nodes),
