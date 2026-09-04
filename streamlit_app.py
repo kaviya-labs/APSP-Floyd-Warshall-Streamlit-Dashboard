@@ -650,7 +650,7 @@ with tabs[0]:
     )
     for graph_name, (case_graph, case_nodes) in GRAPH_CASES.items():
         case_result = floyd_warshall_explainable(case_graph, case_nodes)
-        with st.expander(f"{graph_name} — final shortest-distance matrix"):
+        with st.expander(f"{graph_name} - final shortest-distance matrix"):
             if case_result.negative_cycle_nodes:
                 st.error(
                     "Negative cycle detected. A finite shortest-distance matrix is not "
