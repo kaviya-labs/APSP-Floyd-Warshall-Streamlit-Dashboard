@@ -44,7 +44,7 @@ st.markdown(
 
 st.title("🔗 All-Pairs Shortest Paths : Interactive Dashboard")
 st.caption(
-    "Floyd–Warshall study dashboard based on my dissertation and practical notebook. "
+    "Floyd–Warshall study dashboard based on the submitted dissertation and practical notebook. "
     "It exposes the matrix evolution, relaxation events, path reconstruction, validation, benchmarking, "
     "and a rule-based algorithm prediction panel."
 )
@@ -579,13 +579,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Study focus**")
-    st.write("• APSP + Floyd–Warshall")
-    st.write("• Matrix evolution")
-    st.write("• Relaxation logging")
-    st.write("• Path reconstruction")
-    st.write("• Validation")
-    st.write("• Runtime comparison")
-    st.write("• Algorithm prediction")
+    st.write("1. APSP + Floyd–Warshall")
+    st.write("2. Matrix evolution")
+    st.write("3. Relaxation logging")
+    st.write("4. Path reconstruction")
+    st.write("5. Validation")
+    st.write("6. Runtime comparison")
+    st.write("7. Algorithm prediction")
 
 result = floyd_warshall_explainable(graph, nodes)
 summary = graph_summary_df()
@@ -621,6 +621,17 @@ tabs = st.tabs(
 # Dashboard
 # -----------------------------
 with tabs[0]:
+    with st.expander("What is happening in the Dashboard?", expanded=True):
+        st.write(
+            "The Dashboard is the overview of the selected experimental graph. The sidebar selection "
+            "controls which deterministic graph is analysed. The graph view shows the directed weighted "
+            "structure, the final APSP matrix shows the shortest distance between every ordered pair, "
+            "the status message reports negative-edge or negative-cycle conditions, and the KPI row "
+            "summarises vertices, edges, density, relaxation updates and cycle status. The expandable "
+            "matrices below expose the final result for all four controlled graph cases, while the relaxation "
+            "chart shows where useful matrix changes occurred."
+        )
+
     left, right = st.columns([1.25, 1])
 
     with left:
@@ -645,12 +656,12 @@ with tabs[0]:
 
     st.subheader("Final shortest distances for every graph")
     st.caption(
-        "This section shows the final APSP result for all controlled graph scenarios "
-       
+        "This section shows the final APSP result for all controlled graph scenarios, "
+        "not only the graph selected in the sidebar."
     )
     for graph_name, (case_graph, case_nodes) in GRAPH_CASES.items():
         case_result = floyd_warshall_explainable(case_graph, case_nodes)
-        with st.expander(f"{graph_name} - final shortest-distance matrix"):
+        with st.expander(f"{graph_name} — final shortest-distance matrix"):
             if case_result.negative_cycle_nodes:
                 st.error(
                     "Negative cycle detected. A finite shortest-distance matrix is not "
@@ -680,6 +691,17 @@ with tabs[0]:
 # Matrix evolution
 # -----------------------------
 with tabs[1]:
+    with st.expander("What is happening in Matrix Evolution?", expanded=True):
+        st.write(
+            "This section exposes the internal dynamic-programming stages of Floyd–Warshall. "
+            "The stage selector chooses the initial matrix or a snapshot after a particular intermediate "
+            "vertex k is allowed. For that stage, the table and heatmap show the current distance matrix, "
+            "and the update table identifies every successful relaxation by source, target, old value, "
+            "new value and improvement. The implementation keeps k as the outer loop so that each snapshot "
+            "has a clear meaning: a new intermediate vertex has just been added to the set of permitted "
+            "intermediate vertices."
+        )
+
     st.subheader("Interactive matrix snapshot viewer")
     stage_labels = ["Initial - no intermediate vertex"]
     stage_labels += [f"After {n} is allowed as intermediate" for n in nodes]
@@ -742,6 +764,16 @@ with tabs[1]:
 # Prediction panel
 # -----------------------------
 with tabs[2]:
+    with st.expander("What is happening in the Prediction & Decision Panel?", expanded=True):
+        st.write(
+            "The first part predicts the shortest route for the selected source and target using the "
+            "predecessor matrix and verifies the route by independently summing its edge weights. The graph "
+            "then highlights that route. The second part is a rule-based algorithm decision aid: the user "
+            "chooses whether interpretability, measured speed or APSP suitability is the priority, and the "
+            "application recommends an algorithm using the graph's negative-edge condition, density, size "
+            "and the findings of this study. It is a transparent decision rule, not a machine-learning model."
+        )
+
     st.subheader("🔮 Prediction & decision panel")
 
     if result.negative_cycle_nodes:
@@ -839,6 +871,15 @@ with tabs[2]:
 # Validation
 # -----------------------------
 with tabs[3]:
+    with st.expander("What is happening in Validation?", expanded=True):
+        st.write(
+            "The Validation section checks the custom implementation against independent NetworkX shortest-"
+            "path routines. Methods that violate the selected graph's assumptions are marked not applicable "
+            "rather than treated as implementation failures. The section also checks whether predecessor-"
+            "based paths can be recovered and whether each recovered path has the same total weight as the "
+            "corresponding APSP matrix entry."
+        )
+
     st.subheader("Validation against applicable reference algorithms")
     validation = run_validation(selected_graph_name)
     st.dataframe(validation, use_container_width=True, hide_index=True)
@@ -872,6 +913,14 @@ with tabs[3]:
 # Benchmarks
 # -----------------------------
 with tabs[4]:
+    with st.expander("What is happening in Benchmarks?", expanded=False):
+        st.write(
+            "The benchmark object is optional because it runs additional deterministic experiments. When "
+            "enabled, the application measures the four algorithms on sparse and dense graph families with "
+            "10, 20, 30 and 40 vertices. Three executions are used for each case and the median time is "
+            "displayed so the result is consistent with the dissertation's runtime methodology."
+        )
+
     st.subheader("Controlled runtime benchmark")
 
     if not show_benchmarks:
@@ -920,6 +969,15 @@ with tabs[4]:
 # Algorithm comparison
 # -----------------------------
 with tabs[5]:
+    with st.expander("What is happening in Algorithm Comparison?", expanded=True):
+        st.write(
+            "This view connects the application's computational results to algorithm-selection reasoning. "
+            "It compares Floyd–Warshall, repeated Dijkstra, repeated Bellman–Ford and Johnson in terms of "
+            "APSP/SSSP orientation, negative-edge support, density suitability, theoretical complexity and "
+            "the main measured finding from this study. The purpose is not to declare one universally best "
+            "algorithm, but to show why suitability changes with graph conditions and the analysis objective."
+        )
+
     st.subheader("Comparative algorithm view")
 
     comparison = pd.DataFrame(
